@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 rand = "*"
 mnist = {version = "*", features = ["download"]}
+serde = "*"

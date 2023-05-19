@@ -79,11 +79,11 @@ impl<'a> Mat<'a> {
     }
 
     // TODO: NN takes parametric activation function
-    // fn sigmoid(&mut self) {
-    //     for e in self.elements.to_mut() {
-    //         *e = 1. / (1. + (-*e).exp());
-    //     }
-    // }
+    fn sigmoid(&mut self) {
+        for e in self.elements.to_mut() {
+            *e = 1. / (1. + (-*e).exp());
+        }
+    }
 
     fn softmax(&mut self) {
         let mut max = self.elements[0];
@@ -205,14 +205,18 @@ where
         }
     }
 
-    fn cost(&'a mut self, input: &Mat, output: &Mat) -> f32 {
+    fn cost(&'a mut self, input: &Mat, output: &Mat, chunk_size: usize) -> f32 {
         assert_eq!(input.rows, output.rows);
         assert_eq!(output.cols, self.output().cols);
-        let n = input.rows;
+        // let n = input.rows;
+
+        let n_lo = rand::random::<usize>() % (input.rows - chunk_size);
+        let n_hi = n_lo + chunk_size;
+        let n = n_hi - n_lo;
 
         let mut c = 0.;
         let self_ptr: *mut _ = self;
-        for training_i in 0..n {
+        for training_i in n_lo..n_hi {
             let x = input.row(training_i);
             let y = output.row(training_i);
             {
@@ -237,7 +241,12 @@ where
             let bias = &self.biases[i];
             next_activation.dot_from(activation, weight);
             next_activation.add(bias);
-            next_activation.softmax();
+            if i < LAYERS - 1 {
+                next_activation.softmax();
+            } else {
+                // activation for MNIST is softmax for the output layer
+                next_activation.sigmoid();
+            }
         }
     }
 
@@ -253,7 +262,10 @@ where
 
     fn backprop(&'a mut self, g: &mut NN<LAYERS>, input: &Mat, output: &Mat) {
         assert_eq!(input.rows, output.rows);
-        let n = input.rows;
+        let chunk_size = 1000;
+        let n_lo = rand::random::<usize>() % (input.rows - chunk_size);
+        let n_hi = n_lo + chunk_size;
+        let n = n_hi - n_lo;
         assert_eq!(output.cols, self.output().cols);
 
         g.zero();
@@ -264,7 +276,7 @@ where
         // k - previous activation
         let self_ptr: *mut _ = self;
 
-        for i in 0..n {
+        for i in n_lo..n_hi {
             {
                 let this = unsafe { &mut *self_ptr };
                 this.input_mut().copy_from(&input.row(i));
@@ -330,6 +342,13 @@ where
             }
         }
     }
+}
+
+fn get_cost_from_gradient<const LAYERS: usize>(nn: &NN<LAYERS>) -> f32
+where
+    [(); LAYERS + 1]: Sized,
+{
+    nn.output().elements.iter().map(|x| x * x).sum::<f32>() / (nn.output().cols as f32)
 }
 
 #[allow(unused)]
@@ -401,8 +420,61 @@ fn main() {
     let nn_ptr: *mut _ = &mut nn;
     train(&mut nn, &training_input, &training_output);
     let nn_mut = unsafe { &mut *nn_ptr };
-    let new_cost = nn_mut.cost(&training_input, &training_output);
+    let new_cost = nn_mut.cost(&training_input, &training_output, 1000);
     dbg!(new_cost);
+
+    // so let's spot check one mnist test example
+    let Mnist {
+        tst_img, tst_lbl, ..
+    } = MnistBuilder::new()
+        .label_format_digit()
+        .training_set_length(50_000)
+        .validation_set_length(10_000)
+        .test_set_length(10_000)
+        .finalize();
+    let tst_is = vec![1, 69, 420, 1337];
+    for tst_i in tst_is {
+        let input = Mat {
+            rows: 1,
+            cols: 28 * 28,
+            elements: tst_img[tst_i * 28 * 28..(tst_i + 1) * 28 * 28]
+                .iter()
+                .map(|&byte| byte as f32 / 255.)
+                .collect(),
+        };
+        let nn_mut = unsafe { &mut *nn_ptr };
+        let output = nn_mut.get_output_for(&input);
+        let output = output
+            .elements
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .unwrap()
+            .0;
+
+        // print out in ascii art, the image
+        for i in 0..28 {
+            for j in 0..28 {
+                let pixel = input.at(0, i * 28 + j);
+                print!(
+                    "{}",
+                    if pixel > 0.5 {
+                        "██"
+                    } else if pixel > 0.25 {
+                        "▓▓"
+                    } else if pixel > 0.125 {
+                        "▒▒"
+                    } else if pixel > 0.0625 {
+                        "░░"
+                    } else {
+                        "  "
+                    }
+                );
+            }
+            println!();
+        }
+        println!("expected: {}, got: {}", tst_lbl[tst_i], output);
+    }
 
     // // test the neural net
     // for x in 0..=1 {
@@ -432,13 +504,20 @@ fn train<'a, const LAYERS: usize>(
     let mut g = nn.clone();
     nn.randomize(0., 1.);
 
-    let orig_cost = nn.cost(&training_input, &training_output);
+    let orig_cost = nn.cost(&training_input, &training_output, 1000);
     dbg!(orig_cost);
 
     let learn_rate = 1.;
-    for _ in 0..1 {
+    let num_iterations = 50;
+    for i in 0..num_iterations {
+        print!("iteration: {i}: ");
+
         let nn_mut = unsafe { &mut *nn_ptr };
         nn_mut.backprop(&mut g, &training_input, &training_output);
+
+        let cost_after = get_cost_from_gradient(&g);
+        println!("cost: {cost_after}");
+
         let nn_mut = unsafe { &mut *nn_ptr };
         nn_mut.learn(&g, learn_rate);
     }
