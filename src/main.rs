@@ -3,8 +3,25 @@
 #![feature(maybe_uninit_uninit_array)]
 
 use mnist::{Mnist, MnistBuilder};
+use rand::prelude::IteratorRandom;
+use rand::Rng;
 use std::borrow::Cow;
 use std::mem::MaybeUninit;
+
+const SGD_BATCH_SIZE: usize = 10;
+
+fn dsigmoid(x: f32) -> f32 {
+    x * (1. - x)
+}
+
+fn drelu(x: f32) -> f32 {
+    (x > 0.) as u8 as f32
+    // if x > 0. {
+    //     1.
+    // } else {
+    //     0.
+    // }
+}
 
 #[derive(Debug, Clone)]
 struct Mat<'a> {
@@ -78,7 +95,14 @@ impl<'a> Mat<'a> {
         }
     }
 
-    // TODO: NN takes parametric activation function
+    fn relu(&mut self) {
+        for e in self.elements.to_mut() {
+            if *e < 0. {
+                *e = 0.;
+            }
+        }
+    }
+
     fn sigmoid(&mut self) {
         for e in self.elements.to_mut() {
             *e = 1. / (1. + (-*e).exp());
@@ -205,6 +229,12 @@ where
         }
     }
 
+    fn randomize_he_relu(&mut self) {
+        let n = self.weights[0].cols;
+        let scale = (2. / n as f32).sqrt();
+        self.randomize(-scale, scale);
+    }
+
     fn cost(&'a mut self, input: &Mat, output: &Mat, chunk_size: usize) -> f32 {
         assert_eq!(input.rows, output.rows);
         assert_eq!(output.cols, self.output().cols);
@@ -242,10 +272,10 @@ where
             next_activation.dot_from(activation, weight);
             next_activation.add(bias);
             if i < LAYERS - 1 {
-                next_activation.softmax();
+                next_activation.relu();
             } else {
                 // activation for MNIST is softmax for the output layer
-                next_activation.sigmoid();
+                next_activation.softmax();
             }
         }
     }
@@ -262,7 +292,7 @@ where
 
     fn backprop(&'a mut self, g: &mut NN<LAYERS>, input: &Mat, output: &Mat) {
         assert_eq!(input.rows, output.rows);
-        let chunk_size = 1000;
+        let chunk_size = SGD_BATCH_SIZE;
         let n_lo = rand::random::<usize>() % (input.rows - chunk_size);
         let n_hi = n_lo + chunk_size;
         let n = n_hi - n_lo;
@@ -299,15 +329,15 @@ where
                 for j in 0..self.activations[l].cols {
                     let a = self.activations[l].at(0, j);
                     let da = g.activations[l].at(0, j);
-                    *g.biases[l - 1].at_mut(0, j) += 2. * da * a * (1. - a);
+                    *g.biases[l - 1].at_mut(0, j) += 2. * da * drelu(a);
                     for k in 0..self.activations[l - 1].cols {
                         // j - weight matrix col
                         // k - weight matrix row
                         // pa is the activation of the previous layer
                         let pa = self.activations[l - 1].at(0, k);
                         let w = self.weights[l - 1].at(k, j);
-                        *g.weights[l - 1].at_mut(k, j) += 2. * da * a * (1. - a) * pa;
-                        *g.activations[l - 1].at_mut(0, k) += 2. * da * a * (1. - a) * w;
+                        *g.weights[l - 1].at_mut(k, j) += 2. * da * drelu(a) * pa;
+                        *g.activations[l - 1].at_mut(0, k) += 2. * da * drelu(a) * w;
                     }
                 }
             }
@@ -383,7 +413,7 @@ fn one_hot_encode(n: usize, i: usize) -> impl Iterator<Item = f32> {
     (0..n).map(move |j| if j == i { 1. } else { 0. })
 }
 
-fn mnist_input_output_nn<'a>() -> (Mat<'a>, Mat<'a>, NN<'a, 2>) {
+fn mnist_input_output_nn<'a>() -> (Mat<'a>, Mat<'a>, NN<'a, 3>) {
     let Mnist {
         trn_img,
         trn_lbl,
@@ -410,7 +440,7 @@ fn mnist_input_output_nn<'a>() -> (Mat<'a>, Mat<'a>, NN<'a, 2>) {
             .flat_map(|&byte| one_hot_encode(10, byte as usize))
             .collect(),
     };
-    let nn = NN::<2>::new([28 * 28, 28 * 28, 10]);
+    let nn = NN::<3>::new([28 * 28, 128, 64, 10]);
     (training_input, training_output, nn)
 }
 
@@ -420,7 +450,7 @@ fn main() {
     let nn_ptr: *mut _ = &mut nn;
     train(&mut nn, &training_input, &training_output);
     let nn_mut = unsafe { &mut *nn_ptr };
-    let new_cost = nn_mut.cost(&training_input, &training_output, 1000);
+    let new_cost = nn_mut.cost(&training_input, &training_output, SGD_BATCH_SIZE);
     dbg!(new_cost);
 
     // so let's spot check one mnist test example
@@ -432,7 +462,8 @@ fn main() {
         .validation_set_length(10_000)
         .test_set_length(10_000)
         .finalize();
-    let tst_is = vec![1, 69, 420, 1337];
+    let mut rng = rand::thread_rng();
+    let tst_is = (0..10_000).choose_multiple(&mut rng, 20);
     for tst_i in tst_is {
         let input = Mat {
             rows: 1,
@@ -502,13 +533,13 @@ fn train<'a, const LAYERS: usize>(
     let nn_ptr: *mut _ = &mut nn;
 
     let mut g = nn.clone();
-    nn.randomize(0., 1.);
+    nn.randomize_he_relu();
 
-    let orig_cost = nn.cost(&training_input, &training_output, 1000);
+    let orig_cost = nn.cost(&training_input, &training_output, SGD_BATCH_SIZE);
     dbg!(orig_cost);
 
-    let learn_rate = 1.;
-    let num_iterations = 50;
+    let learn_rate = 0.01;
+    let num_iterations = 5_000;
     for i in 0..num_iterations {
         print!("iteration: {i}: ");
 
