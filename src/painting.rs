@@ -87,90 +87,72 @@ impl Painting {
         response
     }
 
-    // fn interpolate_line(&self, p1: Pos2, p2: Pos2) -> Vec<Pos2> {
-    //     let dx = (p2.x - p1.x).abs();
-    //     let dy = (p2.y - p1.y).abs();
-    //
-    //     let sx = if p1.x < p2.x { 1.0 } else { -1.0 };
-    //     let sy = if p1.y < p2.y { 1.0 } else { -1.0 };
-    //
-    //     let mut err = dx - dy;
-    //     let mut x = p1.x;
-    //     let mut y = p1.y;
-    //
-    //     let mut points = vec![];
-    //
-    //     while (x.floor() != p2.x.floor() || y.floor() != p2.y.floor()) && (x >= p1.x && y >= p1.y) {
-    //         points.push(Pos2::new(x, y));
-    //
-    //         let e2 = 2.0 * err;
-    //
-    //         if e2 > -dy {
-    //             err -= dy;
-    //             x += sx;
-    //         }
-    //         if e2 < dx {
-    //             err += dx;
-    //             y += sy;
-    //         }
-    //     }
-    //
-    //     points.push(Pos2::new(x, y)); // Include the last point
-    //
-    //     points
-    // }
-
-    fn interpolate_line(&self, p1: Pos2, p2: Pos2) -> Vec<Pos2> {
-        let dx = p2.x - p1.x;
-        let dy = p2.y - p1.y;
-
-        let distance = dx.abs().max(dy.abs());
-
-        let dx_normalized = dx / distance;
-        let dy_normalized = dy / distance;
-
-        let mut x = p1.x;
-        let mut y = p1.y;
-
-        let mut points = vec![];
-
-        for _ in 0..=distance.round() as i32 {
-            points.push(Pos2::new(x, y));
-
-            x += dx_normalized;
-            y += dy_normalized;
-        }
-
-        points
-    }
-
     pub fn to_mnist(&self) -> [f32; 28 * 28] {
-        let mut img = [[0.0; 28]; 28];
+        let mut image = [0.0; 28 * 28];
 
-        // Convert lines to image matrix
         for line in &self.lines {
-            for i in 1..line.len() {
-                let p1 = line[i - 1];
-                let p2 = line[i];
-                let points = self.interpolate_line(p1, p2);
-                for point in points {
-                    let x = (point.x * 28.0) as usize;
-                    let y = (point.y * 28.0) as usize;
-                    if x < 28 && y < 28 {
-                        img[y][x] = 1.0;
+            if line.len() < 2 {
+                continue;
+            }
+
+            for i in 0..(line.len() - 1) {
+                let start = line[i];
+                let end = line[i + 1];
+
+                let x1 = (start.x * 28.0) as i32;
+                let y1 = (start.y * 28.0) as i32;
+                let x2 = (end.x * 28.0) as i32;
+                let y2 = (end.y * 28.0) as i32;
+
+                // interpolate between points and fill in pixels
+                let dx = (x2 - x1).abs();
+                let dy = (y2 - y1).abs();
+                let sx = if x1 < x2 { 1 } else { -1 };
+                let sy = if y1 < y2 { 1 } else { -1 };
+
+                let mut err = if dx > dy { dx } else { -dy } / 2;
+                let mut err2;
+
+                let mut x = x1;
+                let mut y = y1;
+
+                loop {
+                    // set the pixel to 1.0 (white)
+                    if x >= 0 && x < 28 && y >= 0 && y < 28 {
+                        image[x as usize + y as usize * 28] = 1.0;
+
+                        // thicken the line
+                        for i in -1..=1 {
+                            for j in -1..=1 {
+                                let nx = x + i;
+                                let ny = y + j;
+
+                                if nx >= 0 && nx < 28 && ny >= 0 && ny < 28 {
+                                    image[nx as usize + ny as usize * 28] = 1.0;
+                                }
+                            }
+                        }
+                    }
+
+                    if x == x2 && y == y2 {
+                        break;
+                    }
+
+                    err2 = err;
+
+                    if err2 > -dx {
+                        err -= dy;
+                        x += sx;
+                    }
+                    if err2 < dy {
+                        err += dx;
+                        y += sy;
                     }
                 }
             }
         }
 
-        // Flatten the 2D image matrix into a 1D array
-        let mut flat_img = [0.0; 28 * 28];
-        for (i, row) in img.iter().enumerate() {
-            for (j, &value) in row.iter().enumerate() {
-                flat_img[i * 28 + j] = value;
-            }
-        }
-
-        flat_img
+        // Return the final mnist-style image
+        image
     }
 }
