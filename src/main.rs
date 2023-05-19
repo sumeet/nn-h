@@ -2,9 +2,12 @@
 #![feature(generic_const_exprs)]
 #![feature(maybe_uninit_uninit_array)]
 
+mod painting;
+
+use eframe::egui;
+use eframe::egui::Widget;
 use mnist::{Mnist, MnistBuilder};
 use rand::prelude::IteratorRandom;
-use rand::Rng;
 use std::borrow::Cow;
 use std::mem::MaybeUninit;
 
@@ -16,11 +19,6 @@ fn dsigmoid(x: f32) -> f32 {
 
 fn drelu(x: f32) -> f32 {
     (x > 0.) as u8 as f32
-    // if x > 0. {
-    //     1.
-    // } else {
-    //     0.
-    // }
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +139,10 @@ impl<'a, const LAYERS: usize> NN<'a, LAYERS>
 where
     [(); LAYERS + 1]: Sized,
 {
+    unsafe fn to_static(self) -> NN<'static, LAYERS> {
+        std::mem::transmute(self)
+    }
+
     fn new(arch: [usize; LAYERS + 1]) -> Self {
         let mut activations: [MaybeUninit<Mat>; LAYERS + 1] = MaybeUninit::uninit_array();
         let mut weights: [MaybeUninit<Mat>; LAYERS] = MaybeUninit::uninit_array();
@@ -453,80 +455,136 @@ fn main() {
     let new_cost = nn_mut.cost(&training_input, &training_output, SGD_BATCH_SIZE);
     dbg!(new_cost);
 
-    // so let's spot check one mnist test example
-    let Mnist {
-        tst_img, tst_lbl, ..
-    } = MnistBuilder::new()
-        .label_format_digit()
-        .training_set_length(50_000)
-        .validation_set_length(10_000)
-        .test_set_length(10_000)
-        .finalize();
-    let mut rng = rand::thread_rng();
-    let tst_is = (0..10_000).choose_multiple(&mut rng, 20);
-    for tst_i in tst_is {
-        let input = Mat {
-            rows: 1,
-            cols: 28 * 28,
-            elements: tst_img[tst_i * 28 * 28..(tst_i + 1) * 28 * 28]
-                .iter()
-                .map(|&byte| byte as f32 / 255.)
-                .collect(),
-        };
-        let nn_mut = unsafe { &mut *nn_ptr };
-        let output = nn_mut.get_output_for(&input);
-        let output = output
-            .elements
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .unwrap()
-            .0;
+    let options = eframe::NativeOptions {
+        initial_window_size: Some(egui::vec2(320.0, 240.0)),
+        ..Default::default()
+    };
+    let mut name = String::new();
+    let mut age = 42;
+    let mut painting = painting::Painting::new();
+    let nn = unsafe { &*nn_ptr };
+    let mut nn_static = unsafe { nn.clone().to_static() };
+    eframe::run_simple_native("My egui App", options, move |ctx, _frame| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("My egui Application");
+            painting.ui(ui);
 
-        // print out in ascii art, the image
-        for i in 0..28 {
-            for j in 0..28 {
-                let pixel = input.at(0, i * 28 + j);
-                print!(
-                    "{}",
-                    if pixel > 0.5 {
-                        "██"
-                    } else if pixel > 0.25 {
-                        "▓▓"
-                    } else if pixel > 0.125 {
-                        "▒▒"
-                    } else if pixel > 0.0625 {
-                        "░░"
-                    } else {
-                        "  "
+            if painting.submit {
+                let input = painting.to_mnist();
+                let input = Mat {
+                    rows: 1,
+                    cols: 28 * 28,
+                    elements: input.to_vec().into(),
+                };
+                let nn_ptr: *mut _ = &mut nn_static;
+                let nn_mut = unsafe { &mut *nn_ptr };
+                let output = nn_mut.get_output_for(&input);
+                let output = output
+                    .elements
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                    .unwrap()
+                    .0;
+                println!("output: {}", output);
+                // print out in ascii art, the image
+                for i in 0..28 {
+                    for j in 0..28 {
+                        let pixel = input.at(0, i * 28 + j);
+                        print!(
+                            "{}",
+                            if pixel > 0.5 {
+                                "██"
+                            } else if pixel > 0.25 {
+                                "▓▓"
+                            } else if pixel > 0.125 {
+                                "▒▒"
+                            } else if pixel > 0.0625 {
+                                "░░"
+                            } else {
+                                "  "
+                            }
+                        );
                     }
-                );
-            }
-            println!();
-        }
-        println!("expected: {}, got: {}", tst_lbl[tst_i], output);
-    }
+                    println!();
+                }
 
-    // // test the neural net
-    // for x in 0..=1 {
-    //     for y in 0..=1 {
-    //         let nn_mut = unsafe { &mut *nn_ptr };
-    //         let input = Mat {
-    //             rows: 1,
-    //             cols: 2,
-    //             elements: vec![x as f32, y as f32].into(),
-    //         };
-    //         let output = nn_mut.get_output_for(&input);
-    //         let output = output.at(0, 0);
-    //         println!("{x} ^ {y} = {} ({output})", (output > 0.5) as u8);
+                painting.submit = false;
+            }
+
+            ui.horizontal(|ui| {
+                let name_label = ui.label("Your name: ");
+                ui.text_edit_singleline(&mut name)
+                    .labelled_by(name_label.id);
+            });
+            ui.add(egui::Slider::new(&mut age, 0..=120).text("age"));
+            if ui.button("Click each year").clicked() {
+                age += 1;
+            }
+            ui.label(format!("Hello '{}', age {}", name, age));
+        });
+    })
+    .unwrap();
+
+    // // so let's spot check one mnist test example
+    // let Mnist {
+    //     tst_img, tst_lbl, ..
+    // } = MnistBuilder::new()
+    //     .label_format_digit()
+    //     .training_set_length(50_000)
+    //     .validation_set_length(10_000)
+    //     .test_set_length(10_000)
+    //     .finalize();
+    // let mut rng = rand::thread_rng();
+    // let tst_is = (0..10_000).choose_multiple(&mut rng, 20);
+    // for tst_i in tst_is {
+    //     let input = Mat {
+    //         rows: 1,
+    //         cols: 28 * 28,
+    //         elements: tst_img[tst_i * 28 * 28..(tst_i + 1) * 28 * 28]
+    //             .iter()
+    //             .map(|&byte| byte as f32 / 255.)
+    //             .collect(),
+    //     };
+    //     let nn_mut = unsafe { &mut *nn_ptr };
+    //     let output = nn_mut.get_output_for(&input);
+    //     let output = output
+    //         .elements
+    //         .iter()
+    //         .enumerate()
+    //         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+    //         .unwrap()
+    //         .0;
+    //
+    //     // print out in ascii art, the image
+    //     for i in 0..28 {
+    //         for j in 0..28 {
+    //             let pixel = input.at(0, i * 28 + j);
+    //             print!(
+    //                 "{}",
+    //                 if pixel > 0.5 {
+    //                     "██"
+    //                 } else if pixel > 0.25 {
+    //                     "▓▓"
+    //                 } else if pixel > 0.125 {
+    //                     "▒▒"
+    //                 } else if pixel > 0.0625 {
+    //                     "░░"
+    //                 } else {
+    //                     "  "
+    //                 }
+    //             );
+    //         }
+    //         println!();
     //     }
+    //     println!("expected: {}, got: {}", tst_lbl[tst_i], output);
     // }
 }
 
 fn train<'a, const LAYERS: usize>(
     mut nn: &'a mut NN<'a, LAYERS>,
-    training_input: &'a Mat,
-    training_output: &'a Mat,
+    training_input: &Mat,
+    training_output: &Mat,
 ) where
     [(); LAYERS + 1]: Sized,
 {
@@ -539,7 +597,7 @@ fn train<'a, const LAYERS: usize>(
     dbg!(orig_cost);
 
     let learn_rate = 0.01;
-    let num_iterations = 5_000;
+    let num_iterations = 17;
     for i in 0..num_iterations {
         print!("iteration: {i}: ");
 
