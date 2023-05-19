@@ -91,6 +91,34 @@ impl Painting {
         let mut image = [0.0; 28 * 28];
 
         for line in &self.lines {
+            for point in line {
+                let x = (point.x * 28.0) as usize;
+                let y = (point.y * 28.0) as usize;
+
+                // thickening and giving some depth to the lines by filling the surrounding pixels
+                for i in -1..=1 {
+                    for j in -1..=1 {
+                        let nx = (x as i32 + i) as usize;
+                        let ny = (y as i32 + j) as usize;
+                        if nx < 28 && ny < 28 {
+                            // calculate a grayscale value based on the distance to the point
+                            let value = 1.0 - 0.5 * ((i * i + j * j) as f32).sqrt();
+                            image[nx + ny * 28] = value.max(image[nx + ny * 28]);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Return the final mnist-style image
+        image
+    }
+
+    #[allow(unused)]
+    pub fn to_mnist_flat(&self) -> [f32; 28 * 28] {
+        let mut image = [0.0; 28 * 28];
+
+        for line in &self.lines {
             if line.len() < 2 {
                 continue;
             }
