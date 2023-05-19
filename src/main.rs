@@ -2,6 +2,7 @@
 #![feature(generic_const_exprs)]
 #![feature(maybe_uninit_uninit_array)]
 
+use mnist::{Mnist, MnistBuilder};
 use std::borrow::Cow;
 use std::mem::MaybeUninit;
 
@@ -77,9 +78,27 @@ impl<'a> Mat<'a> {
         }
     }
 
-    fn sigmoid(&mut self) {
+    // TODO: NN takes parametric activation function
+    // fn sigmoid(&mut self) {
+    //     for e in self.elements.to_mut() {
+    //         *e = 1. / (1. + (-*e).exp());
+    //     }
+    // }
+
+    fn softmax(&mut self) {
+        let mut max = self.elements[0];
+        for e in &self.elements[1..] {
+            if *e > max {
+                max = *e;
+            }
+        }
+        let mut sum = 0.;
         for e in self.elements.to_mut() {
-            *e = 1. / (1. + (-*e).exp());
+            *e = (*e - max).exp();
+            sum += *e;
+        }
+        for e in self.elements.to_mut() {
+            *e /= sum;
         }
     }
 }
@@ -218,7 +237,7 @@ where
             let bias = &self.biases[i];
             next_activation.dot_from(activation, weight);
             next_activation.add(bias);
-            next_activation.sigmoid();
+            next_activation.softmax();
         }
     }
 
@@ -313,7 +332,8 @@ where
     }
 }
 
-fn main() {
+#[allow(unused)]
+fn xor_input_output_net<'a>() -> (Mat<'a>, Mat<'a>, NN<'a, 2>) {
     let training_input = Mat {
         rows: 4,
         cols: 2,
@@ -336,28 +356,68 @@ fn main() {
         ]
         .into(),
     };
+    let nn = NN::<2>::new([2, 2, 1]);
+    (training_input, training_output, nn)
+}
 
-    let mut nn = NN::<2>::new([2, 2, 1]);
+fn one_hot_encode(n: usize, i: usize) -> impl Iterator<Item = f32> {
+    (0..n).map(move |j| if j == i { 1. } else { 0. })
+}
+
+fn mnist_input_output_nn<'a>() -> (Mat<'a>, Mat<'a>, NN<'a, 2>) {
+    let Mnist {
+        trn_img,
+        trn_lbl,
+        tst_img,
+        tst_lbl,
+        ..
+    } = MnistBuilder::new()
+        .label_format_digit()
+        .training_set_length(50_000)
+        .validation_set_length(10_000)
+        .test_set_length(10_000)
+        .finalize();
+
+    let training_input = Mat {
+        rows: 50_000,
+        cols: 28 * 28,
+        elements: trn_img.iter().map(|&byte| byte as f32 / 255.).collect(),
+    };
+    let training_output = Mat {
+        rows: 50_000,
+        cols: 10,
+        elements: trn_lbl
+            .iter()
+            .flat_map(|&byte| one_hot_encode(10, byte as usize))
+            .collect(),
+    };
+    let nn = NN::<2>::new([28 * 28, 28 * 28, 10]);
+    (training_input, training_output, nn)
+}
+
+fn main() {
+    // let (training_input, training_output, mut nn) = xor_input_output_net();
+    let (training_input, training_output, mut nn) = mnist_input_output_nn();
     let nn_ptr: *mut _ = &mut nn;
     train(&mut nn, &training_input, &training_output);
     let nn_mut = unsafe { &mut *nn_ptr };
     let new_cost = nn_mut.cost(&training_input, &training_output);
     dbg!(new_cost);
 
-    // test the neural net
-    for x in 0..=1 {
-        for y in 0..=1 {
-            let nn_mut = unsafe { &mut *nn_ptr };
-            let input = Mat {
-                rows: 1,
-                cols: 2,
-                elements: vec![x as f32, y as f32].into(),
-            };
-            let output = nn_mut.get_output_for(&input);
-            let output = output.at(0, 0);
-            println!("{x} ^ {y} = {} ({output})", (output > 0.5) as u8);
-        }
-    }
+    // // test the neural net
+    // for x in 0..=1 {
+    //     for y in 0..=1 {
+    //         let nn_mut = unsafe { &mut *nn_ptr };
+    //         let input = Mat {
+    //             rows: 1,
+    //             cols: 2,
+    //             elements: vec![x as f32, y as f32].into(),
+    //         };
+    //         let output = nn_mut.get_output_for(&input);
+    //         let output = output.at(0, 0);
+    //         println!("{x} ^ {y} = {} ({output})", (output > 0.5) as u8);
+    //     }
+    // }
 }
 
 fn train<'a, const LAYERS: usize>(
@@ -376,7 +436,7 @@ fn train<'a, const LAYERS: usize>(
     dbg!(orig_cost);
 
     let learn_rate = 1.;
-    for _ in 0..5000 {
+    for _ in 0..1 {
         let nn_mut = unsafe { &mut *nn_ptr };
         nn_mut.backprop(&mut g, &training_input, &training_output);
         let nn_mut = unsafe { &mut *nn_ptr };
