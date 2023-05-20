@@ -590,7 +590,7 @@ fn train<'a, const LAYERS: usize>(
     dbg!(orig_cost);
 
     let learn_rate = 0.01;
-    let num_iterations = 1;
+    let num_iterations = 10_000;
     for i in 0..num_iterations {
         print!("iteration: {i}: ");
 

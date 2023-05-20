@@ -1,5 +1,11 @@
 use eframe::egui;
 use eframe::egui::*;
+use image;
+use image::imageops::{resize, Nearest, Triangle};
+use image::{GrayImage, ImageBuffer, Luma, Pixel};
+use imageproc::drawing::{draw_filled_circle_mut, draw_filled_rect_mut, draw_line_segment_mut};
+use imageproc::geometric_transformations::translate;
+use imageproc::rect::Region;
 
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -10,10 +16,10 @@ pub struct Painting {
     pub submit: bool,
 }
 
+const CANVAS_SIZE: f32 = 200.;
 impl Painting {
     pub fn ui(&mut self, ui: &mut Ui) {
         self.ui_control(ui);
-        const CANVAS_SIZE: f32 = 200.;
 
         let canvas_size = Vec2::new(CANVAS_SIZE, CANVAS_SIZE);
         let scroll_area = ScrollArea::neither()
@@ -86,8 +92,8 @@ impl Painting {
         response
     }
 
-    pub fn to_mnist(&self) -> [f32; 28 * 28] {
-        let mut image = [0.0; 28 * 28];
+    pub(crate) fn to_mnist(&self) -> [f32; 28 * 28] {
+        let mut img = GrayImage::new(CANVAS_SIZE as _, CANVAS_SIZE as _);
 
         for line in &self.lines {
             if line.len() < 2 {
@@ -97,10 +103,10 @@ impl Painting {
                 let start = line[i];
                 let end = line[i + 1];
 
-                let x1 = (start.x * 28.0) as i32;
-                let y1 = (start.y * 28.0) as i32;
-                let x2 = (end.x * 28.0) as i32;
-                let y2 = (end.y * 28.0) as i32;
+                let x1 = (start.x * CANVAS_SIZE) as i32;
+                let y1 = (start.y * CANVAS_SIZE) as i32;
+                let x2 = (end.x * CANVAS_SIZE) as i32;
+                let y2 = (end.y * CANVAS_SIZE) as i32;
 
                 // interpolate between points and fill in pixels
                 let dx = (x2 - x1).abs();
@@ -113,17 +119,21 @@ impl Painting {
 
                 let mut x = x1;
                 let mut y = y1;
+
+                let line_thiccness = 5;
 
                 loop {
                     // add depth around the pixel
-                    for i in -2..=2 {
-                        for j in -2..=2 {
+                    for i in -line_thiccness..=line_thiccness {
+                        for j in -line_thiccness..=line_thiccness {
                             let nx = x + i;
                             let ny = y + j;
-                            if nx >= 0 && nx < 28 && ny >= 0 && ny < 28 {
-                                let value = 1.0 - 0.4 * ((i * i + j * j) as f32).sqrt();
-                                image[nx as usize + ny as usize * 28] =
-                                    value.max(image[nx as usize + ny as usize * 28]);
+                            if nx >= 0
+                                && nx < (CANVAS_SIZE as _)
+                                && ny >= 0
+                                && ny < (CANVAS_SIZE as _)
+                            {
+                                img.put_pixel(nx as _, ny as _, Luma([255]));
                             }
                         }
                     }
@@ -143,76 +153,69 @@ impl Painting {
             }
         }
 
-        image
+        center(&img)
+            .into_raw()
+            .iter()
+            .map(|&x| x as f32 / 255.0)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap()
     }
+}
 
-    #[allow(unused)]
-    pub fn to_mnist_flat(&self) -> [f32; 28 * 28] {
-        let mut image = [0.0; 28 * 28];
+fn binarize_and_invert(image: &mut GrayImage, threshold: u8) {
+    for pixel in image.pixels_mut() {
+        *pixel = if pixel.0[0] > threshold {
+            Luma([0u8])
+        } else {
+            Luma([255u8])
+        };
+    }
+}
 
-        for line in &self.lines {
-            if line.len() < 2 {
-                continue;
-            }
+fn center_of_mass(img: &GrayImage) -> (f32, f32) {
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+    let mut count = 0.0;
 
-            for i in 0..(line.len() - 1) {
-                let start = line[i];
-                let end = line[i + 1];
-
-                let x1 = (start.x * 28.0) as i32;
-                let y1 = (start.y * 28.0) as i32;
-                let x2 = (end.x * 28.0) as i32;
-                let y2 = (end.y * 28.0) as i32;
-
-                // interpolate between points and fill in pixels
-                let dx = (x2 - x1).abs();
-                let dy = (y2 - y1).abs();
-                let sx = if x1 < x2 { 1 } else { -1 };
-                let sy = if y1 < y2 { 1 } else { -1 };
-
-                let mut err = if dx > dy { dx } else { -dy } / 2;
-                let mut err2;
-
-                let mut x = x1;
-                let mut y = y1;
-
-                loop {
-                    // set the pixel to 1.0 (white)
-                    if x >= 0 && x < 28 && y >= 0 && y < 28 {
-                        image[x as usize + y as usize * 28] = 1.0;
-
-                        // thicken the line
-                        for i in -1..=1 {
-                            for j in -1..=1 {
-                                let nx = x + i;
-                                let ny = y + j;
-
-                                if nx >= 0 && nx < 28 && ny >= 0 && ny < 28 {
-                                    image[nx as usize + ny as usize * 28] = 1.0;
-                                }
-                            }
-                        }
-                    }
-
-                    if x == x2 && y == y2 {
-                        break;
-                    }
-
-                    err2 = err;
-
-                    if err2 > -dx {
-                        err -= dy;
-                        x += sx;
-                    }
-                    if err2 < dy {
-                        err += dx;
-                        y += sy;
-                    }
-                }
-            }
+    for (x, y, pixel) in img.enumerate_pixels() {
+        if pixel.0[0] > 0 {
+            sum_x += x as f32;
+            sum_y += y as f32;
+            count += 1.0;
         }
-
-        // Return the final mnist-style image
-        image
     }
+
+    if count > 0.0 {
+        (sum_x / count, sum_y / count)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+fn center(img: &GrayImage) -> GrayImage {
+    let mut img = resize(img, 20, 20, Triangle);
+
+    let (com_x, com_y) = center_of_mass(&img);
+    let (com_x, com_y) = (com_x.round() as i32, com_y.round() as i32);
+
+    let mut centered_img = GrayImage::new(28, 28);
+
+    let (center_x, center_y) = (14, 14);
+
+    let (start_x, start_y) = (center_x - com_x, center_y - com_y);
+
+    for (x, y, pixel) in img.enumerate_pixels() {
+        let new_x = x as i32 + start_x;
+        let new_y = y as i32 + start_y;
+        if new_x >= 0
+            && new_x < (centered_img.width() as _)
+            && new_y >= 0
+            && new_y < (centered_img.height() as _)
+        {
+            centered_img.put_pixel(new_x as _, new_y as _, *pixel);
+        }
+    }
+
+    centered_img
 }
