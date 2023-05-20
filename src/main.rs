@@ -417,11 +417,7 @@ fn one_hot_encode(n: usize, i: usize) -> impl Iterator<Item = f32> {
 
 fn mnist_input_output_nn<'a>() -> (Mat<'a>, Mat<'a>, NN<'a, 3>) {
     let Mnist {
-        trn_img,
-        trn_lbl,
-        tst_img,
-        tst_lbl,
-        ..
+        trn_img, trn_lbl, ..
     } = MnistBuilder::new()
         .label_format_digit()
         .training_set_length(50_000)
@@ -460,18 +456,22 @@ fn main() {
             initial_window_size: Some(egui::vec2(320.0, 240.0)),
             ..Default::default()
         };
-        let mut name = String::new();
-        let mut age = 42;
         let mut painting = painting::Painting::new();
+        let mut output = None;
         let nn = unsafe { &*nn_ptr };
         let mut nn_static = unsafe { nn.clone().to_static() };
         eframe::run_simple_native("My egui App", options, move |ctx, _frame| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                ui.heading("My egui Application");
+                ui.ctx().set_pixels_per_point(4.);
+                ui.heading("Neural network MNIST");
                 painting.ui(ui);
+                if let Some(output) = output {
+                    ui.label(format!("Output: {}", output));
+                }
 
                 if painting.submit {
                     let input = painting.to_mnist();
+                    painting.lines.clear();
                     let input = Mat {
                         rows: 1,
                         cols: 28 * 28,
@@ -479,15 +479,17 @@ fn main() {
                     };
                     let nn_ptr: *mut _ = &mut nn_static;
                     let nn_mut = unsafe { &mut *nn_ptr };
-                    let output = nn_mut.get_output_for(&input);
-                    let output = output
-                        .elements
-                        .iter()
-                        .enumerate()
-                        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                        .unwrap()
-                        .0;
-                    println!("output: {}", output);
+                    output = Some(
+                        nn_mut
+                            .get_output_for(&input)
+                            .elements
+                            .iter()
+                            .enumerate()
+                            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                            .unwrap()
+                            .0,
+                    );
+                    println!("output: {:?}", output);
                     // print out in ascii art, the image
                     for i in 0..28 {
                         for j in 0..28 {
@@ -512,17 +514,6 @@ fn main() {
 
                     painting.submit = false;
                 }
-
-                ui.horizontal(|ui| {
-                    let name_label = ui.label("Your name: ");
-                    ui.text_edit_singleline(&mut name)
-                        .labelled_by(name_label.id);
-                });
-                ui.add(egui::Slider::new(&mut age, 0..=120).text("age"));
-                if ui.button("Click each year").clicked() {
-                    age += 1;
-                }
-                ui.label(format!("Hello '{}', age {}", name, age));
             });
         })
         .unwrap();
@@ -600,7 +591,6 @@ fn train<'a, const LAYERS: usize>(
 
     let learn_rate = 0.01;
     let num_iterations = 1;
-    // let num_iterations = 10_000;
     for i in 0..num_iterations {
         print!("iteration: {i}: ");
 

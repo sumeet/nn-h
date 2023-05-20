@@ -11,4 +11,6 @@ mnist = {version = "*", features = ["download"]}
 serde = "*"
 # use eframe from subdir crates/eframe from emilk/egui on github:
 eframe = {git = "https://github.com/emilk/egui/", branch = "master" }
+image = "*"
+imageproc = "*"
 
